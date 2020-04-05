@@ -18,14 +18,14 @@ License: MIT
 
 from typing import Callable, Deque, Dict, Generic, List, NewType, Optional, Tuple, TypeVar, Union, Sequence, overload
 from collections import deque
-from threading import Lock, Condition, Thread, RLock
+from threading import Lock, Condition, Thread
 from abc import ABC, abstractclassmethod
 import time
 import unittest
 
-T = TypeVar('T')
-U = TypeVar('U')
-V = TypeVar('V')
+T = TypeVar('T') # pylint: disable=invalid-name
+U = TypeVar('U') # pylint: disable=invalid-name
+V = TypeVar('V') # pylint: disable=invalid-name
 
 QueueId = NewType('QueueId', int)
 
@@ -34,39 +34,54 @@ CallbackId = NewType('CallbackId', int)
 
 class NoInputs(Exception):
     """You provided an empty list of MQueues to select"""
-    pass
 
 class IdGen(Generic[T]):
+    """Id number generator; creates values wrapped with the given function.
+
+    Uses threading.Lock to ensure thread safety."""
     def __init__(self, make: Callable[[int], T]) -> None:
+        """Create a new IdGen instance.
+
+        Sequence starts from 0; each value is wrapped with the fiven make-function."""
         self._lock = Lock()
-        self._id = 0
+        self._seq_id = 0
         self._make = make
 
     def make(self) -> T:
+        """Create a new id value"""
         with self._lock:
-            id = self._id
-            self._id += 1
-            return self._make(id)
+            seq_id = self._seq_id
+            self._seq_id += 1
+            return self._make(seq_id)
 
-callback_id_gen : IdGen[CallbackId] = IdGen(lambda x: CallbackId(x))
+callback_id_gen: IdGen[CallbackId] = IdGen(CallbackId)
 
 class ValueWrapper(Generic[T]):
+    """Wrap values inside a class; used to overcome mypy type checking woes.
+
+    We cannot use type variables for isinstance checks, but we can use ValueWrapper."""
     def __init__(self, value: T):
         self.value = value
 
 class MQueueBase(ABC, Generic[T]):
+    """Base class for MQueue."""
     @abstractclassmethod
     def take_mapped_or_add_callback(self, callback: Callback, mapping: Callable[[T], U]) -> \
         Union[CallbackId, ValueWrapper[U]]:
-        pass
+        """Either take (remove from queue) a value from the queue, or if the queue is empty, install the
+        callback. In that case the CallbackId for removal is returned.
+
+        This operation is done with the lock held, but the lock is not held when calling the
+        callback."""
 
     def take_or_add_callback(self, callback: Callback) -> \
         Union[CallbackId, ValueWrapper[T]]:
+        """A version of take_mapped_or_add_callback that doesn't use a mappign function."""
         return self.take_mapped_or_add_callback(callback, lambda x: x)
 
     @abstractclassmethod
     def remove_callback(self, callback_id: CallbackId) -> None:
-        pass
+        """Remove a callback by its id. If the callback is not installed, this is a no-op."""
 
     @abstractclassmethod
     def take_mapped(self, mapping: Callable[[T], U]) -> Optional[U]:
@@ -75,42 +90,49 @@ class MQueueBase(ABC, Generic[T]):
         This allows for consistent behavior should the mapping function throw;
         in that case the value is not removed from the Queue and remains to be
         collected by a source that doesn't fail reading it."""
-        pass
 
     def take_nonblock(self) -> Optional[T]:
         """Non-blocking take"""
         return self.take_mapped(lambda x: x)
 
     def map(self, mapping: Callable[[T], U]) -> "MQueueMapped[T, U]":
+        """Returna new MQueueMapped that behaves as this one, but has its values mapped with the given
+        mapping function."""
         return MQueueMapped(self, mapping)
 
 class MQueue(MQueueBase[T]):
     """MQueue is a multi-selectable Queue
 
-In other words, you can wait for any one of multiple MQueue
-objects to be readable."""
+    In other words, you can wait for any one of multiple MQueue
+    objects to be readable."""
 
-    _id_gen : IdGen[QueueId] = IdGen(lambda x: QueueId(x))
+    _queue_id_gen: IdGen[QueueId] = IdGen(QueueId)
 
     def __init__(self) -> None:
         # used for ordering locking to eliminate deadlocks
-        self.id = MQueue._id_gen.make()
-        self._messages : Deque[T] = deque()
+        self.queue_id = MQueue._queue_id_gen.make()
+        self._messages: Deque[T] = deque()
         self._lock = Lock()
         #self._new_data = Condition(self._lock)
-        self._callbacks : Dict[CallbackId, Callback] = {}
+        self._callbacks: Dict[CallbackId, Callback] = {}
 
     def put(self, value: T) -> None:
-        callbacks : List[Callback] = []
+        """Puts in a new value to this queue. Non-blocking."""
+        callbacks: List[Callback] = []
         with self._lock:
             self._messages.append(value)
             callbacks = [cb[1] for cb in self._callbacks.items()]
             self._callbacks = {}
             #self._new_data.notify_all()
-        for cb in callbacks:
-            cb(None)
+        for callback in callbacks:
+            callback(None)
 
     def take_mapped(self, mapping: Callable[[T], U]) -> Optional[U]:
+        """Take a value mapped with the given mapping function.
+
+        If there is no value in the queue, return None.
+
+        Mapping is performed with the MQueue lock held."""
         with self._lock:
             if self._messages:
                 value = self._messages.popleft()
@@ -145,56 +167,65 @@ objects to be readable."""
                 return callback_id
 
     def remove_callback(self, callback_id: CallbackId) -> None:
+        """Remove a callback by its id."""
         with self._lock:
             if callback_id in self._callbacks:
                 del self._callbacks[callback_id]
 
 class MQueueMapped(MQueueBase[U], Generic[T, U]):
+    """Given an MQueueBase[T] and a mapping function from T to U, perform mapping if its values to U."""
     def __init__(self, parent: MQueueBase[T], mapping: Callable[[T], U]) -> None:
         self.parent = parent
         self.mapping = mapping
 
     def take_mapped(self, mapping: Callable[[U], V]) -> Optional[V]:
+        """Take a mapped value.
+
+        Of course, the mapping is done in top of the mapping performed by the object itself.
+
+        """
         return self.parent.take_mapped(lambda x: mapping(self.mapping(x)))
 
     def take_mapped_or_add_callback(self, callback: Callback, mapping: Callable[[U], V]) -> \
         Union[CallbackId, ValueWrapper[V]]:
+        """Returns a value or installs a callback."""
         return self.parent.take_mapped_or_add_callback(callback, lambda x: mapping(self.mapping(x)))
 
     def remove_callback(self, callback_id: CallbackId) -> None:
+        """Remove given callback."""
         return self.parent.remove_callback(callback_id)
 
 class MQueueSelect(MQueueBase[T]):
+    """Given multiple MQueueBases, activate as soon as one of them becomes active."""
     def __init__(self, queues: Sequence[MQueueBase[T]]) -> None:
         self.queues = queues
-        self._callbacks : Dict[CallbackId, Dict[int, Tuple[MQueueBase[T], CallbackId]]] = {}
+        self._callbacks: Dict[CallbackId, Dict[int, Tuple[MQueueBase[T], CallbackId]]] = {}
 
     def take_mapped(self, mapping: Callable[[T], U]) -> Optional[U]:
+        """Takes a mapped value from the queues (or None if none available)"""
         for queue in self.queues:
-            value = queue.take_mapped(lambda x: mapping(x))
+            value = queue.take_mapped(mapping)
             if value is not None:
                 return value
         return None
 
     def take_mapped_or_add_callback(self, callback: Callback, mapping: Callable[[T], U]) -> \
         Union[CallbackId, ValueWrapper[U]]:
+        """Take a mapped value from the queues or installs callbacks."""
 
         callback_id = callback_id_gen.make()
-        exception : List[Optional[Exception]] = [None]
+
         def wrapped_callback(incoming_exception: Optional[Exception]) -> None:
             self.remove_callback(callback_id)
-            if incoming_exception:
-                exception = incoming_exception
-            else:
-                try:
-                    callback(None)
-                except Exception as exn:
-                    exception = exn
+            try:
+                callback(incoming_exception)
+            except Exception as exn: # pylint: disable=broad-except
+                callback(exn)
 
-        callback_ids : Dict[int, Tuple[MQueueBase[T], CallbackId]] = {}
+        callback_ids: Dict[int, Tuple[MQueueBase[T], CallbackId]] = {}
 
         def cancel_callbacks() -> None:
-            for queue_index, callback_info in callback_ids.items():
+            for _, callback_info in callback_ids.items():
                 callback_info[0].remove_callback(callback_info[1])
 
         queue_index = 0
@@ -216,29 +247,35 @@ class MQueueSelect(MQueueBase[T]):
         return callback_id
 
     def remove_callback(self, callback_id: CallbackId) -> None:
+        """Remove callback by its id."""
         if callback_id in self._callbacks:
             callbacks = self._callbacks[callback_id]
             del self._callbacks[callback_id]
-            for queue_index, callback_info in callbacks.items():
+            for _, callback_info in callbacks.items():
                 callback_info[0].remove_callback(callback_info[1])
 
 @overload
-def take(queue: MQueueBase[T]) -> T: ...
+def take(queue: MQueueBase[T]) -> T: # pylint: disable=missing-function-docstring
+    ...
 
 @overload
-def take(queue: MQueueBase[T], timeout: Optional[float]) -> Optional[T]: ...
+def take(queue: MQueueBase[T], timeout: Optional[float]) -> Optional[T]: # pylint: disable=missing-function-docstring
+    ...
 
 def take(queue: MQueueBase[T], timeout: Optional[float] = None) -> Optional[T]:
+    """Given a queue, take a value from, possibly limited by the given timeout.
+
+    If timeout expires the function returns None."""
     deadline = time.monotonic() + timeout if timeout is not None else None
 
     def timer_expired() -> bool:
         return deadline is not None and time.monotonic() >= deadline
 
     result_available = Condition()
-    got_result : List[Optional[T]] = [None]
+    got_result: List[Optional[T]] = [None]
     got_exception: List[Optional[Exception]] = [None]
-    local_result : Optional[ValueWrapper[T]] = None
-    local_exception : Optional[Exception] = None
+    local_result: Optional[ValueWrapper[T]] = None
+    local_exception: Optional[Exception] = None
     while local_result is None and local_exception is None and not timer_expired():
         def callback(exception: Optional[Exception]) -> None:
             with result_available:
@@ -247,7 +284,7 @@ def take(queue: MQueueBase[T], timeout: Optional[float] = None) -> Optional[T]:
                 else:
                     try:
                         got_result[0] = queue.take_nonblock()
-                    except Exception as exn:
+                    except Exception as exn: # pylint: disable=broad-except
                         got_exception[0] = exn
                 result_available.notify()
 
@@ -273,7 +310,7 @@ def take(queue: MQueueBase[T], timeout: Optional[float] = None) -> Optional[T]:
             queue.remove_callback(take_result)
 
     if local_exception is not None:
-        raise local_exception
+        raise local_exception # pylint: disable=raising-bad-type
     else:
         return local_result.value if local_result else None
 
@@ -282,162 +319,192 @@ def choose(queues: Sequence[MQueueBase[T]]) -> MQueueSelect[T]:
     return MQueueSelect(queues)
 
 @overload
-def select(queues: Sequence[MQueueBase[T]]) -> T: ...
+def select(queues: Sequence[MQueueBase[T]]) -> T: # pylint: disable=missing-function-docstring
+    ...
 
 @overload
-def select(queues: Sequence[MQueueBase[T]], timeout: Optional[float]) -> Optional[T]: ...
+def select(queues: Sequence[MQueueBase[T]], timeout: Optional[float]) -> Optional[T]: # pylint: disable=missing-function-docstring
+    ...
 
 def select(queues: Sequence[MQueueBase[T]], timeout: Optional[float] = None) -> Optional[T]:
+    """Given a sequence of MQueues, return the first value it finds from them, within the optional
+    timeout.
+
+    If the timeout expires, returns None.
+
+    Basically chains take and choose together.
+
+    If the queues list is empty, raises NoInputs.
+    """
     if not queues:
         raise NoInputs
     return take(choose(queues), timeout)
 
 class TestExn(Exception):
-    pass
+    """Test exception used in tests"""
 
 class TestMQueueu(unittest.TestCase):
+    """MQueue tests"""
     def test_empty(self) -> None:
-        q : MQueue[int] = MQueue()
-        self.assertEqual(q.take_nonblock(), None)
+        """Test taking from an empty queue."""
+        queue: MQueue[int] = MQueue()
+        self.assertEqual(queue.take_nonblock(), None)
 
     def test_simple(self) -> None:
-        q : MQueue[int] = MQueue()
-        q.put(42)
-        self.assertEqual(q.take_nonblock(), 42)
+        """Test taking a value from a queue with one value."""
+        queue: MQueue[int] = MQueue()
+        queue.put(42)
+        self.assertEqual(queue.take_nonblock(), 42)
 
     def test_callback(self) -> None:
-        q : MQueue[int] = MQueue()
+        """Test invoking a callback then taking a value frmo a queue."""
+        queue: MQueue[int] = MQueue()
         callback_called = [0]
-        def callback(exception: Optional[Exception]) -> None:
+        def callback(_: Optional[Exception]) -> None:
             callback_called[0] += 1
-        callback_id = q.take_or_add_callback(callback)
+        callback_id = queue.take_or_add_callback(callback)
         self.assertIsNotNone(callback_id)
-        q.put(42)
-        self.assertEqual(q.take_nonblock(), 42)
+        queue.put(42)
+        self.assertEqual(queue.take_nonblock(), 42)
         self.assertEqual(callback_called[0], 1)
 
     def test_select_0(self) -> None:
+        """Tests that selecting from no queues results in an exception."""
         with self.assertRaises(NoInputs):
-            value = select([], timeout=None)
+            select([], timeout=None)
 
     def test_select_timeout_1(self) -> None:
-        q : MQueue[int] = MQueue()
-        value = select([q], timeout=0.1)
+        """Tests that timeout works when queue receives no data."""
+        queue: MQueue[int] = MQueue()
+        value = select([queue], timeout=0.1)
         self.assertEqual(value, None)
-        self.assertEqual(q._callbacks, {})
+        self.assertEqual(queue._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_timeout_2(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q2 : MQueue[int] = MQueue()
-        value = select([q1, q2], timeout=0.1)
+        """Tests that timeout works when the two queues receive no data."""
+        queue1: MQueue[int] = MQueue()
+        queue2: MQueue[int] = MQueue()
+        value = select([queue1, queue2], timeout=0.1)
         self.assertEqual(value, None)
-        self.assertEqual(q1._callbacks, {})
-        self.assertEqual(q2._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
+        self.assertEqual(queue2._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_1(self) -> None:
-        q : MQueue[int] = MQueue()
-        q.put(42)
-        value = select([q], timeout=None)
+        """Test that select works with a queue with one value."""
+        queue: MQueue[int] = MQueue()
+        queue.put(42)
+        value = select([queue], timeout=None)
         self.assertEqual(value, 42)
-        self.assertEqual(q._callbacks, {})
+        self.assertEqual(queue._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_2(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q1.put(1)
-        q2 : MQueue[int] = MQueue()
-        q2.put(2)
-        value1 = select([q1, q2], timeout=None)
+        """Test that select works with two queues, each with one value."""
+        queue1: MQueue[int] = MQueue()
+        queue1.put(1)
+        queue2: MQueue[int] = MQueue()
+        queue2.put(2)
+        value1 = select([queue1, queue2], timeout=None)
         self.assertTrue(value1 in [1, 2])
-        value2 = select([q1, q2], timeout=None)
+        value2 = select([queue1, queue2], timeout=None)
         self.assertTrue(value2 in [1, 2] and value2 != value1)
-        self.assertEqual(q1._callbacks, {})
-        self.assertEqual(q2._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
+        self.assertEqual(queue2._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_live(self) -> None:
-        q1 : MQueue[int] = MQueue()
+        """Test that select works with one value, when the value is put in in an another thread."""
+        queue1: MQueue[int] = MQueue()
         def thread() -> None:
             time.sleep(0.05)
-            q1.put(1)
-        th = Thread(target=thread)
-        th.start()
-        value = select([q1], timeout=0.2)
+            queue1.put(1)
+        thread_handle = Thread(target=thread)
+        thread_handle.start()
+        value = select([queue1], timeout=0.2)
         self.assertEqual(value, 1)
-        self.assertEqual(q1._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_live2(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q2 : MQueue[int] = MQueue()
+        """Tests that select works with two values, values put into separate queues in another thread. """
+        queue1: MQueue[int] = MQueue()
+        queue2: MQueue[int] = MQueue()
         def thread() -> None:
             time.sleep(0.05)
-            q1.put(1)
+            queue1.put(1)
             time.sleep(0.05)
-            q2.put(2)
-        th = Thread(target=thread)
-        th.start()
-        value = select([q1, q2], timeout=0.1)
+            queue2.put(2)
+        thread_handle = Thread(target=thread)
+        thread_handle.start()
+        value = select([queue1, queue2], timeout=0.1)
         self.assertEqual(value, 1)
-        self.assertEqual(q1._callbacks, {})
-        self.assertEqual(q2._callbacks, {})
+        value = select([queue1, queue2], timeout=0.1)
+        self.assertEqual(value, 2)
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
+        self.assertEqual(queue2._callbacks, {}) # pylint: disable=protected-access
 
     def test_map(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q1.put(1)
-        qm1 = q1.map(lambda x: x + 1)
+        """Test that map works with take_nonblock."""
+        queue1: MQueue[int] = MQueue()
+        queue1.put(1)
+        qm1 = queue1.map(lambda x: x + 1)
         value = qm1.take_nonblock()
         self.assertEqual(value, 2)
-        self.assertEqual(q1._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
 
     def test_map_select_1(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q1.put(1)
-        value = select([q1.map(lambda x: x + 1)])
+        """Test that map works with select."""
+        queue1: MQueue[int] = MQueue()
+        queue1.put(1)
+        value = select([queue1.map(lambda x: x + 1)])
         self.assertEqual(value, 2)
-        self.assertEqual(q1._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
 
     def test_map_select_2(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q1.put(0)
-        q2 : MQueue[int] = MQueue()
-        q2.put(10)
-        value1 = select([q1.map(lambda x: x + 1),
-                         q2.map(lambda x: x + 1)])
+        """Test that map works with select, with two queues."""
+        queue1: MQueue[int] = MQueue()
+        queue1.put(0)
+        queue2: MQueue[int] = MQueue()
+        queue2.put(10)
+        value1 = select([queue1.map(lambda x: x + 1),
+                         queue2.map(lambda x: x + 1)])
         self.assertTrue(value1 in [1, 11])
-        value2 = select([q1.map(lambda x: x + 1),
-                         q2.map(lambda x: x + 1)])
+        value2 = select([queue1.map(lambda x: x + 1),
+                         queue2.map(lambda x: x + 1)])
         self.assertTrue(value2 in [1, 11] and value2 != value1)
-        self.assertEqual(q1._callbacks, {})
-        self.assertEqual(q2._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
+        self.assertEqual(queue2._callbacks, {}) # pylint: disable=protected-access
 
     def test_map_select_raise_1(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q1.put(0)
+        """Test that map works with select and a risen exception."""
+        queue1: MQueue[int] = MQueue()
+        queue1.put(0)
         with self.assertRaises(TestExn):
             def failer(i: int) -> int:
                 raise TestExn()
-            value = select([q1.map(failer)])
-        self.assertEqual(q1._callbacks, {})
+            select([queue1.map(failer)])
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_live_raise(self) -> None:
-        q1 : MQueue[int] = MQueue()
+        """Test that map works with select and a risen exception when the value is put in in an another thread."""
+        queue1: MQueue[int] = MQueue()
         def thread() -> None:
             time.sleep(0.05)
-            q1.put(1)
-        th = Thread(target=thread)
-        th.start()
+            queue1.put(1)
+        thread_handle = Thread(target=thread)
+        thread_handle.start()
         with self.assertRaises(TestExn):
             def failer(i: int) -> int:
                 raise TestExn()
-            value = select([q1.map(failer)])
-        self.assertEqual(q1._callbacks, {})
+            select([queue1.map(failer)])
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_live_raise2(self) -> None:
-        q1 : MQueue[int] = MQueue()
+        """Test that reading values from a queue works even if the mapping function throw an exception once."""
+        queue1: MQueue[int] = MQueue()
         def thread() -> None:
             time.sleep(0.05)
-            q1.put(1)
-            q1.put(2)
-        th = Thread(target=thread)
-        th.start()
+            queue1.put(1)
+            queue1.put(2)
+        thread_handle = Thread(target=thread)
+        thread_handle.start()
         count = [0]
         def failer(i: int) -> int:
             count[0] += 1
@@ -445,34 +512,36 @@ class TestMQueueu(unittest.TestCase):
                 raise TestExn()
             else:
                 return i
-        source = [q1.map(failer)]
+        source = [queue1.map(failer)]
         with self.assertRaises(TestExn):
             value = select(source)
         value = select(source)
         self.assertEqual(value, 1)
         value = select(source)
         self.assertEqual(value, 2)
-        self.assertEqual(q1._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_deep1(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q1.put(0)
-        value = take(choose([choose([q1.map(lambda x: x + 1)])]))
+        """Test that choose inside a choose works."""
+        queue1: MQueue[int] = MQueue()
+        queue1.put(0)
+        value = take(choose([choose([queue1.map(lambda x: x + 1)])]))
         self.assertEqual(value, 1)
-        self.assertEqual(q1._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
 
     def test_select_deep2(self) -> None:
-        q1 : MQueue[int] = MQueue()
-        q1.put(0)
-        q2 : MQueue[int] = MQueue()
-        q2.put(10)
-        source = choose([choose([q1.map(lambda x: x + 1)]),
-                         q2.map(lambda x: x + 1)])
+        """Test that choose inside a choose works, when different levels are used."""
+        queue1: MQueue[int] = MQueue()
+        queue1.put(0)
+        queue2: MQueue[int] = MQueue()
+        queue2.put(10)
+        source = choose([choose([queue1.map(lambda x: x + 1)]),
+                         queue2.map(lambda x: x + 1)])
         value1 = take(source)
         self.assertTrue(value1 in [1, 11])
         value2 = take(source)
         self.assertTrue(value2 in [1, 11] and value2 != value1)
-        self.assertEqual(q1._callbacks, {})
+        self.assertEqual(queue1._callbacks, {}) # pylint: disable=protected-access
 
 if __name__ == '__main__':
     unittest.main()
