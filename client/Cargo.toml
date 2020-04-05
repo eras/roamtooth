@@ -1,0 +1,11 @@
+[package]
+name = "roamtooth"
+version = "0.1.0"
+authors = ["Erkki Seppälä <flux@inside.org>"]
+edition = "2018"
+
+[dependencies]
+dbus = "0.8.2"
+crossbeam-channel = "0.3.9"
+sse-client = "1.0.0"
+serde_json = "1.0.51"
