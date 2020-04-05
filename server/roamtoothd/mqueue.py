@@ -23,6 +23,8 @@ from abc import ABC, abstractclassmethod
 import time
 import unittest
 
+from roamtoothd.idgen import IdGen
+
 T = TypeVar('T') # pylint: disable=invalid-name
 U = TypeVar('U') # pylint: disable=invalid-name
 V = TypeVar('V') # pylint: disable=invalid-name
@@ -34,25 +36,6 @@ CallbackId = NewType('CallbackId', int)
 
 class NoInputs(Exception):
     """You provided an empty list of MQueues to select"""
-
-class IdGen(Generic[T]):
-    """Id number generator; creates values wrapped with the given function.
-
-    Uses threading.Lock to ensure thread safety."""
-    def __init__(self, make: Callable[[int], T]) -> None:
-        """Create a new IdGen instance.
-
-        Sequence starts from 0; each value is wrapped with the fiven make-function."""
-        self._lock = Lock()
-        self._seq_id = 0
-        self._make = make
-
-    def make(self) -> T:
-        """Create a new id value"""
-        with self._lock:
-            seq_id = self._seq_id
-            self._seq_id += 1
-            return self._make(seq_id)
 
 callback_id_gen: IdGen[CallbackId] = IdGen(CallbackId)
 
