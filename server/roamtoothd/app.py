@@ -1,4 +1,9 @@
-"""The web app providing API for RoamTooth clients."""
+"""The web app providing API for RoamTooth clients.
+
+Copyright 2020 Erkki Seppälä <flux@inside.org>
+License: MIT
+
+"""
 import os
 
 from dataclasses import dataclass

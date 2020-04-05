@@ -1,4 +1,9 @@
-"""Dispatch arranges events from """
+"""Dispatch arranges events from
+
+Copyright 2020 Erkki Seppälä <flux@inside.org>
+License: MIT
+
+"""
 
 from abc import ABC, abstractclassmethod
 from typing import Tuple, Optional, Any, NewType, Dict, Type

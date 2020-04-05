@@ -1,6 +1,11 @@
 """Id number generator; creates values wrapped with the given function.
 
-Uses threading.Lock to ensure thread safety."""
+Uses threading.Lock to ensure thread safety.
+
+Copyright 2020 Erkki Seppälä <flux@inside.org>
+License: MIT
+
+"""
 
 from typing import TypeVar, Callable, Generic
 from threading import Lock

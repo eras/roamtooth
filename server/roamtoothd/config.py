@@ -1,4 +1,9 @@
-"""Configuration for RoamToothd"""
+"""Configuration for RoamToothd
+
+Copyright 2020 Erkki Seppälä <flux@inside.org>
+License: MIT
+
+"""
 
 import os
 BASEDIR = os.path.abspath(os.path.dirname(__file__))
