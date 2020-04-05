@@ -39,25 +39,25 @@ def create() -> Flask:
     def stream(): # type: ignore # pylint: disable=unused-variable
         """Request a server-side event stream to this client"""
         def event_stream(): # type: ignore
-            yield "data:\n{}\n\n".format(json.dumps({"hello": "world"}))
+            yield "data: {}\n\n".format(json.dumps({"hello": "world"}))
             counter = 0
             with dispatch.register_client() as client: # pylint: disable=not-context-manager
                 while True:
                     message = mqueue.take(client.to_client, 1.0)
                     if message:
-                        yield "data:\n{}\n\n".format(json.dumps(message))
+                        yield "data: {}\n\n".format(json.dumps(message))
                     else:
-                        yield "data:\n{}\n\n".format(json.dumps({"keep": "alive", "counter": counter}))
+                        yield "data: {}\n\n".format(json.dumps({"async": "keepalive", "args": {"counter": counter}}))
                         counter += 1
 
         return Response(event_stream(), mimetype="text/event-stream") # type: ignore
 
     # a simple page that says hello
-    @app.route('/event', methods=['POST'])
-    def event(): # type: ignore # pylint: disable=unused-variable
+    @app.route('/cmd/device_disconnect', methods=['POST'])
+    def device_disconnect(): # type: ignore # pylint: disable=unused-variable
         """Post a synchronous or asynchronous event from a client."""
         content = RequestDeviceConnect(**request.json)
-        dispatch.broadcast({"ping": "pong"})
+        dispatch.broadcast({"sid": 1, "sync": "device_disconnect", "args": {}})
         return content.device
 
     return app
