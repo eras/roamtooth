@@ -3,3 +3,6 @@ __pycache__
 .mypy_cache
 *.swp
 rt-env
+Cargo.lock
+.emacs.desktop
+.emacs.desktop.lock
