@@ -1,0 +1,76 @@
+client-server protocol
+
+sync-messages require a response with matching "sid" (for
+server-originates sync messages) or with matching "cid" (for
+client-originated messages). Normal response results come in field
+"response", error results in field "error" (only one can exist).
+
+Messages are processed in the order of ids. If there is a delay in
+reception of an event (ie. receiving event 2 but event 1 is unknown),
+old events will be explicitly requested for.
+
+Client increments its "cid" after every message, server increments its
+"sid" on every message. Exception: messages with flag "transient" set do not
+result in incrementing the counter. Such messages also won't be
+available when requesting past events.
+
+"async" messages cannot be responded to.
+
+Responses can arrive out-of-order.
+
+* handshake
+client: {"cid": 0, "sync": "hello", "args": {"id":"deviceid", "name": "Laptop", "sid": null}}
+
+server returns the last "cid" it knew about before the request
+server: {"cid": 0, "response": {"cid": null}}
+
+* next handshake
+client: {"cid": 1, "sync": "hello", "args": {"id":"deviceid", "name": "Laptop", "sid": 0}}
+
+server returns the last "cid" it knew about before the request
+server: {"cid": 1, "sid": 1, "response": {"cid": 0}}
+
+* client requests old events:
+client: {"cid": 2, "transient": true, "sync": "events", "args": {"id>=": 0, "id<", 2}}
+server: {"cid": 2, "sid": 1, "transient": true, "response": {"events":[{"cid": 0, "sid": 0, "response": {"cid": null}}, server: {"cid": 1, "sid": 1, "response": {"cid": 0}}]}}
+
+server-client requests are the same but for ids used
+
+* asynchronous client-originated messages
+{"cid": 1, "async": "device_connected", "args": {"device": "0011223344aabb"}}
+{"cid": 2, "async": "device_disconnected", "args": {"device": "0011223344aabb"}}
+{"cid": 3, "async": "scan_status", "args": {"devices": [{"id":"0011223344aabb", "rssi": 42.0, "name": null}]}}
+
+* synchronous client-originated messages:
+{"cid": 4, "sync": ""}
+
+* synchronous server-originated messages:
+server: {"sid": 2, "sync": "device_disconnect", "args": {"device": "0011223344aabb"}}
+client: {"cid": 4, "sid": 2, "response": {}}
+or client: {"cid": 4, "sid": 2, "error": { "code": 1, "message": "unknown device", "info": {}}}
+server: {"sid": 3, "sync": "device_connect", "args": {"device": "0011223344aabb"}}
+client: {"cid": 4, "sid": 3, "response": {}}
+or client: {"cid": 4, "sid": 3, "error": { "code": 1, "message": "unknown device", "info": {}}}
+
+server: {"sid": 5, "sync": "start_scan", "args": {"interface": "bluetooth"}}
+client: {"cid": 5, "sid": 5, "response": {}}
+server: {"sid": 5, "sync": "stop_scan", "args": {"interface": "bluetooth"}}
+client: {"cid": 5, "sid": 5, "response": {}}
+
+server: {"sid": 5, "sync": "report_battery", "args": {"device": "0011223344aabb"}}
+client: {"cid": 5, "sid": 5, "response": {"battery_level": 42}}
+or client: {"cid": 5, "sid": 5, "error": { "code": 2, "message": "device not connected", "info": {} }}
+
+* client requests ownership of device:
+client: {"cid": 5, "request_ownership": {"device" "0011223344aabb"}}
+
+to some other clients:
+server: {"sid": 5, "sync": "device_disconnect", "args": {"device" "0011223344aabb"}}
+server: {"sid": 42, "sync": "device_disconnect", "args": {"device" "0011223344aabb"}}
+
+once they have succeeded:
+server: {"sid": 4, "cid": 5, "response": {}}
+(client can then connect the device)
+
+or
+server: {"sid": 4, "cid": 5, "error": { "code": 3, "message": "some clients did not release the device", "info": {"id": "foo"} }}
